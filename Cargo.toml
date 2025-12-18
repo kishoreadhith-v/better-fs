@@ -1,0 +1,12 @@
+[package]
+name = "better-fs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fuser = "0.12"      # The Rust wrapper for FUSE
+libc = "0.2"        # For System Error Codes (ENOENT, etc.)
+env_logger = "0.10" # For logging
+log = "0.4"
+sha2 = "0.10"
+hex = "0.4"
