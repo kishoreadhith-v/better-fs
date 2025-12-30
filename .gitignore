@@ -3,3 +3,4 @@ test_stress_db/
 target/
 test_db_*/
 my_storage/
+mnt/

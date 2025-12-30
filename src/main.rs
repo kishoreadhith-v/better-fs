@@ -2,6 +2,7 @@
 mod chunker;
 mod storage;
 mod file_manager;
+mod fuse_handler;
 
 use clap::{Parser, Subcommand};
 use file_manager::FileManager;
@@ -32,6 +33,10 @@ enum Commands {
     },
     /// List all files stored in BetterFS
     List,
+    Mount {
+        /// The folder to mount to (e.g., ./mnt)
+        mount_point: String,
+    },
 }
 
 fn main() {
@@ -82,6 +87,24 @@ fn main() {
                     println!(" - {}", file);
                 }
             }
+        },
+        Commands::Mount { mount_point } => {
+            println!("Mounting BetterFS to {}...", mount_point);
+            println!("(Press Ctrl+C to unmount)");
+            
+            // Ensure the mount point exists
+            fs::create_dir_all(&mount_point).unwrap();
+
+            // Start the FUSE Driver
+            let options = vec![
+                fuser::MountOption::RW, // Read-Only
+                fuser::MountOption::FSName("betterfs".to_string()),
+                fuser::MountOption::AutoUnmount, // Helps clean up on exit
+            ];
+
+            let fs_impl = fuse_handler::BetterFS::new(manager);
+            
+            fuser::mount2(fs_impl, mount_point, &options).unwrap();
         }
     }
 }

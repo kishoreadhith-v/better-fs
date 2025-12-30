@@ -130,6 +130,18 @@ impl FileManager {
         }
         full_data
     }
+
+    /// Helper for FUSE: Check if a file exists and return its size
+    pub fn get_file_metadata(&self, filename: &str) -> Option<u64> {
+        match self.db.get(filename) {
+            Ok(Some(bytes)) => {
+                // Deserialize just enough to get the size
+                let recipe: FileRecipe = bincode::deserialize(&bytes).ok()?;
+                Some(recipe.file_size)
+            },
+            _ => None,
+        }
+    }
 }
 
 // =======================================================================
