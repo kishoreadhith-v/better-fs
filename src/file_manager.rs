@@ -1,8 +1,10 @@
 // src/file_manager.rs
 use crate::chunker::Chunker;
 use crate::storage::Storage;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileRecipe {
     pub file_size: u64,
     pub chunks: Vec<String>, // List of Hash IDs in order
@@ -10,47 +12,99 @@ pub struct FileRecipe {
 
 pub struct FileManager {
     storage: Storage,
+    db: sled::Db,
 }
 
 impl FileManager {
     pub fn new(storage_path: &str) -> Self {
-        FileManager {
-            storage: Storage::new(storage_path),
+        let storage = Storage::new(storage_path);
+
+        // Open the database inside the same folder
+        // "metadata_db" will be a folder inside your storage path
+        let db_path = Path::new(storage_path).join("metadata_db");
+        let db = sled::open(db_path).expect("Failed to open metadata database");
+
+        FileManager { storage, db }
+    }
+
+    // =======================================================================
+    // PUBLIC API (What the FUSE Frontend will call)
+    // =======================================================================
+
+    /// 1. WRITE: Ingests data, creates a recipe, and saves it to the DB under 'filename'
+    pub fn write_file(&self, filename: &str, data: &[u8]) -> Result<(), String> {
+        // A. Run the math engine to create the recipe (Chunking + Storage)
+        let recipe = self.create_recipe_from_data(data);
+
+        // B. Convert the Recipe struct into bytes (Serialization)
+        let encoded_recipe = bincode::serialize(&recipe)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+
+        // C. Save to Database (Key: Filename, Value: RecipeBytes)
+        self.db.insert(filename, encoded_recipe)
+            .map_err(|e| format!("Database error: {}", e))?;
+        
+        // Ensure data is flushed to disk immediately
+        self.db.flush().map_err(|e| format!("Flush error: {}", e))?;
+
+        println!("Debug: Saved recipe for '{}' ({} chunks)", filename, recipe.chunks.len());
+        Ok(())
+    }
+
+    /// 2. READ: Looks up a filename, finds the recipe, and reconstructs the data
+    pub fn read_file(&self, filename: &str) -> Result<Vec<u8>, String> {
+        // A. Look up the filename in the DB
+        match self.db.get(filename) {
+            Ok(Some(bytes)) => {
+                // B. Found it! Decode the binary back into a Struct
+                let recipe: FileRecipe = bincode::deserialize(&bytes)
+                    .map_err(|e| format!("Deserialization error: {}", e))?;
+                
+                // C. Use the recipe to glue the chunks back together
+                Ok(self.reconstruct_from_recipe(&recipe))
+            },
+            Ok(None) => Err(format!("File not found: {}", filename)),
+            Err(e) => Err(format!("Database error: {}", e)),
         }
     }
 
-    /// The Core Logic: Ingests a byte stream, chunks it, deduplicates it.
-    pub fn write_file(&self, data: &[u8]) -> FileRecipe {
+    /// 3. LIST: Returns a list of all filenames in the system
+    pub fn list_files(&self) -> Vec<String> {
+        let mut files = Vec::new();
+        // Iterate over every key in the DB
+        for item in self.db.iter() {
+            if let Ok((key, _)) = item {
+                if let Ok(filename) = String::from_utf8(key.to_vec()) {
+                    files.push(filename);
+                }
+            }
+        }
+        files
+    }
+
+    // =======================================================================
+    // INTERNAL HELPERS (The "Engine Room" - Private)
+    // =======================================================================
+
+    /// The core logic from your old write_file
+    fn create_recipe_from_data(&self, data: &[u8]) -> FileRecipe {
         let mut chunker = Chunker::new();
         let mut recipe = Vec::new();
         let mut current_chunk_buffer = Vec::new();
         let mut total_size = 0;
 
         for &byte in data {
-            // 1. Keep track of the actual data for this chunk
             current_chunk_buffer.push(byte);
-            
-            // 2. Feed the math engine
             chunker.feed_byte(byte);
 
-            // 3. Did we hit a magic boundary?
             if chunker.should_cut() {
-                // Save to disk (returns hash)
                 let hash = self.storage.write_chunk(&current_chunk_buffer);
                 recipe.push(hash);
-                
-                // Track size
                 total_size += current_chunk_buffer.len() as u64;
-                
-                // Reset buffer for the next chunk
                 current_chunk_buffer.clear();
-                // Note: We do NOT reset the chunker window. 
-                // The rolling hash continues flowing across boundaries.
             }
         }
 
-        // 4. Handle the "Leftovers" 
-        // (The last piece of the file rarely ends exactly on a boundary)
         if !current_chunk_buffer.is_empty() {
             let hash = self.storage.write_chunk(&current_chunk_buffer);
             recipe.push(hash);
@@ -63,52 +117,61 @@ impl FileManager {
         }
     }
 
-    /// Reconstructs a file by reading all its chunks back
-    pub fn read_file(&self, recipe: &FileRecipe) -> Vec<u8> {
+    /// The core logic from your old read_file
+    fn reconstruct_from_recipe(&self, recipe: &FileRecipe) -> Vec<u8> {
         let mut full_data = Vec::new();
-        
+
         for hash in &recipe.chunks {
-            // Retrieve data from "Freezer"
             if let Some(chunk_data) = self.storage.read_chunk(hash) {
                 full_data.extend(chunk_data);
             } else {
                 eprintln!("CRITICAL ERROR: Chunk {} missing from storage!", hash);
-                // In a real system, this is where you return an IO Error
             }
         }
-        
         full_data
     }
 }
 
+// =======================================================================
+// TESTS
+// =======================================================================
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
 
     #[test]
-    fn test_file_ingestion_and_restoration() {
-        let db_path = "./test_file_mgr_db";
-        let manager = FileManager::new(db_path);
+    fn test_database_persistence() {
+        let db_path = "./test_db_persistence";
+        // Clean up previous runs
+        if Path::new(db_path).exists() {
+            fs::remove_dir_all(db_path).unwrap();
+        }
 
-        // 1. Create a "Virtual File" with repeating patterns
-        // "Hello" repeats, so it should technically be deduplicated if chunks align
-        let original_content = "RepeatPattern ".repeat(1000); 
-        let data = original_content.as_bytes();
+        {
+            // 1. Open the manager and save a file
+            let manager = FileManager::new(db_path);
+            let content = b"This is a test file for the database.";
+            manager.write_file("test.txt", content).expect("Write failed");
+            
+            // Verify it exists in memory
+            let loaded = manager.read_file("test.txt").expect("Read failed");
+            assert_eq!(loaded, content);
+        } // <--- Manager is dropped here (Simulates closing the app)
 
-        // 2. Write it (Chunk -> Hash -> Store)
-        let recipe = manager.write_file(data);
-        
-        println!("File split into {} chunks", recipe.chunks.len());
-        println!("First Chunk Hash: {}", recipe.chunks[0]);
+        println!("--- Simulating App Restart ---");
 
-        // 3. Read it back (Hash -> Store -> Data)
-        let restored_data = manager.read_file(&recipe);
-        let restored_string = String::from_utf8(restored_data).unwrap();
-
-        // 4. Verify exact match
-        assert_eq!(original_content, restored_string, "Restored file must match original");
-        assert_eq!(original_content.len() as u64, recipe.file_size);
+        {
+            // 2. Re-open the manager (Simulate restart)
+            let manager = FileManager::new(db_path);
+            
+            // 3. Try to read the file again
+            // If DB works, this should succeed. If DB fails, this returns "File not found".
+            let loaded = manager.read_file("test.txt").expect("Persistence failed: File not found after restart");
+            
+            assert_eq!(loaded, b"This is a test file for the database.");
+            println!("Success: Data survived the restart!");
+        }
 
         // Cleanup
         fs::remove_dir_all(db_path).unwrap();

@@ -10,3 +10,7 @@ env_logger = "0.10" # For logging
 log = "0.4"
 sha2 = "0.10"
 hex = "0.4"
+sled = "0.34"       # The Database
+bincode = "1.3"     # To turn your Structs into binary for the DB
+serde = { version = "1.0", features = ["derive"] } # To make Structs savable
+clap = { version = "4.5.53", features = ["derive"] }
