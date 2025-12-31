@@ -199,4 +199,42 @@ impl Filesystem for BetterFS {
         }
         reply.ok();
     }
+
+    // 9. UNLINK: "User typed 'rm file.txt'"
+    fn unlink(&mut self, _req: &Request, _parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let filename = name.to_str().unwrap();
+        
+        // Remove from Backend
+        if let Ok(_) = self.manager.delete_file(filename) {
+            // Also remove from RAM buffer if it was open
+            let inode = calculate_inode(filename);
+            self.open_files.remove(&inode);
+            reply.ok();
+        } else {
+            reply.error(ENOENT);
+        }
+    }
+
+    // 10. RENAME: "User typed 'mv old.txt new.txt'"
+    fn rename(&mut self, _req: &Request, _parent: u64, name: &OsStr, _newparent: u64, newname: &OsStr, _flags: u32, reply: ReplyEmpty) {
+        let old_filename = name.to_str().unwrap();
+        let new_filename = newname.to_str().unwrap();
+
+        // 1. Rename in Backend
+        if let Ok(_) = self.manager.rename_file(old_filename, new_filename) {
+            
+            // 2. Handle RAM Buffers (if the file was currently open/being written)
+            let old_inode = calculate_inode(old_filename);
+            if let Some(mut buffer) = self.open_files.remove(&old_inode) {
+                // Update the buffer's name and re-insert under new inode
+                buffer.filename = new_filename.to_string();
+                let new_inode = calculate_inode(new_filename);
+                self.open_files.insert(new_inode, buffer);
+            }
+
+            reply.ok();
+        } else {
+            reply.error(ENOENT);
+        }
+    }
 }

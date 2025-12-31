@@ -142,6 +142,24 @@ impl FileManager {
             _ => None,
         }
     }
+
+    pub fn delete_file(&self, filename: &str) -> Result<(), String> {
+        self.db.remove(filename).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn rename_file(&self, old_name: &str, new_name: &str) -> Result<(), String> {
+        // 1. Get the recipe for the old name
+        if let Some(data) = self.db.get(old_name).map_err(|e| e.to_string())? {
+            // 2. Insert it under the new name
+            self.db.insert(new_name, data).map_err(|e| e.to_string())?;
+            // 3. Remove the old name
+            self.db.remove(old_name).map_err(|e| e.to_string())?;
+            Ok(())
+        } else {
+            Err("File not found".to_string())
+        }
+    }
 }
 
 // =======================================================================
