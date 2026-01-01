@@ -1,13 +1,20 @@
 // src/file_manager.rs
 use crate::chunker::Chunker;
 use crate::storage::Storage;
-use serde::{Deserialize, Serialize};
+use serde::{ Deserialize, Serialize };
 use std::path::Path;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum FileKind {
+    File,
+    Directory,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileRecipe {
     pub file_size: u64,
     pub chunks: Vec<String>, // List of Hash IDs in order
+    pub kind: FileKind,
 }
 
 pub struct FileManager {
@@ -37,13 +44,13 @@ impl FileManager {
         let recipe = self.create_recipe_from_data(data);
 
         // B. Convert the Recipe struct into bytes (Serialization)
-        let encoded_recipe = bincode::serialize(&recipe)
+        let encoded_recipe = bincode
+            ::serialize(&recipe)
             .map_err(|e| format!("Serialization error: {}", e))?;
 
         // C. Save to Database (Key: Filename, Value: RecipeBytes)
-        self.db.insert(filename, encoded_recipe)
-            .map_err(|e| format!("Database error: {}", e))?;
-        
+        self.db.insert(filename, encoded_recipe).map_err(|e| format!("Database error: {}", e))?;
+
         // Ensure data is flushed to disk immediately
         self.db.flush().map_err(|e| format!("Flush error: {}", e))?;
 
@@ -57,12 +64,16 @@ impl FileManager {
         match self.db.get(filename) {
             Ok(Some(bytes)) => {
                 // B. Found it! Decode the binary back into a Struct
-                let recipe: FileRecipe = bincode::deserialize(&bytes)
+                let recipe: FileRecipe = bincode
+                    ::deserialize(&bytes)
                     .map_err(|e| format!("Deserialization error: {}", e))?;
-                
+
+                if recipe.kind == FileKind::Directory {
+                    return Ok(Vec::new());
+                }
                 // C. Use the recipe to glue the chunks back together
                 Ok(self.reconstruct_from_recipe(&recipe))
-            },
+            }
             Ok(None) => Err(format!("File not found: {}", filename)),
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -114,6 +125,7 @@ impl FileManager {
         FileRecipe {
             file_size: total_size,
             chunks: recipe,
+            kind: FileKind::File,
         }
     }
 
@@ -132,17 +144,15 @@ impl FileManager {
     }
 
     /// Helper for FUSE: Check if a file exists and return its size
-    pub fn get_file_metadata(&self, filename: &str) -> Option<u64> {
+    pub fn get_file_metadata(&self, filename: &str) -> Option<(u64, FileKind)> {
         match self.db.get(filename) {
             Ok(Some(bytes)) => {
-                // Deserialize just enough to get the size
                 let recipe: FileRecipe = bincode::deserialize(&bytes).ok()?;
-                Some(recipe.file_size)
-            },
+                Some((recipe.file_size, recipe.kind))
+            }
             _ => None,
         }
     }
-
     pub fn delete_file(&self, filename: &str) -> Result<(), String> {
         self.db.remove(filename).map_err(|e| e.to_string())?;
         Ok(())
@@ -159,6 +169,17 @@ impl FileManager {
         } else {
             Err("File not found".to_string())
         }
+    }
+
+    pub fn create_directory(&self, path: &str) -> Result<(), String> {
+        let recipe = FileRecipe {
+            file_size: 0,
+            chunks: vec![],
+            kind: FileKind::Directory,
+        };
+        let encoded: Vec<u8> = bincode::serialize(&recipe).map_err(|e| e.to_string())?;
+        self.db.insert(path, encoded).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -183,7 +204,7 @@ mod tests {
             let manager = FileManager::new(db_path);
             let content = b"This is a test file for the database.";
             manager.write_file("test.txt", content).expect("Write failed");
-            
+
             // Verify it exists in memory
             let loaded = manager.read_file("test.txt").expect("Read failed");
             assert_eq!(loaded, content);
@@ -194,11 +215,13 @@ mod tests {
         {
             // 2. Re-open the manager (Simulate restart)
             let manager = FileManager::new(db_path);
-            
+
             // 3. Try to read the file again
             // If DB works, this should succeed. If DB fails, this returns "File not found".
-            let loaded = manager.read_file("test.txt").expect("Persistence failed: File not found after restart");
-            
+            let loaded = manager
+                .read_file("test.txt")
+                .expect("Persistence failed: File not found after restart");
+
             assert_eq!(loaded, b"This is a test file for the database.");
             println!("Success: Data survived the restart!");
         }
