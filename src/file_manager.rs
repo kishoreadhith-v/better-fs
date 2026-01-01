@@ -17,6 +17,14 @@ pub struct FileRecipe {
     pub kind: FileKind,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DirEntry {
+    pub name: String,
+    pub kind: FileKind,
+    // In a real FS, we would put an 'inode_number' here.
+    // For now, we will store the 'full path' or a reference to make lookup easy.
+}
+
 pub struct FileManager {
     storage: Storage,
     db: sled::Db,
@@ -171,12 +179,16 @@ impl FileManager {
     pub fn get_file_metadata(&self, filename: &str) -> Option<(u64, FileKind)> {
         match self.db.get(filename) {
             Ok(Some(bytes)) => {
-                let recipe: FileRecipe = bincode::deserialize(&bytes).ok()?;
-                Some((recipe.file_size, recipe.kind))
+                // Deserialize the recipe to check its Kind
+                if let Ok(recipe) = bincode::deserialize::<FileRecipe>(&bytes) {
+                    return Some((recipe.file_size, recipe.kind));
+                }
+                None
             }
             _ => None,
         }
     }
+
     pub fn delete_file(&self, filename: &str) -> Result<(), String> {
         self.db.remove(filename).map_err(|e| e.to_string())?;
         Ok(())
@@ -266,24 +278,24 @@ mod integrity_tests {
     fn test_manager_cycle() {
         let path = "./test_fm_db";
         // Clean up old test data
-        if std::path::Path::new(path).exists() { 
-            fs::remove_dir_all(path).unwrap(); 
+        if std::path::Path::new(path).exists() {
+            fs::remove_dir_all(path).unwrap();
         }
-        
+
         let fm = FileManager::new(path);
         // Create data large enough to force multiple chunks (> 4KB)
         let data = b"A repeatable pattern for testing chunking limits...".repeat(500); // ~25KB
-        
+
         println!("1. Writing file via Manager...");
         fm.write_file("test_cycle.txt", &data).expect("Manager Write Failed");
-        
+
         println!("2. Reading file via Manager...");
         let read_back = fm.read_file("test_cycle.txt").expect("Manager Read Failed");
-        
+
         // Compare lengths first for easy debugging
         assert_eq!(data.len(), read_back.len(), "Length mismatch!");
         assert_eq!(data.to_vec(), read_back, "Content mismatch!");
-        
+
         println!("Success! Manager cycle works.");
         fs::remove_dir_all(path).unwrap();
     }
