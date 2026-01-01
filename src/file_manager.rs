@@ -63,16 +63,28 @@ impl FileManager {
         // A. Look up the filename in the DB
         match self.db.get(filename) {
             Ok(Some(bytes)) => {
-                // B. Found it! Decode the binary back into a Struct
+                // B. Decode the binary back into a Struct
                 let recipe: FileRecipe = bincode
                     ::deserialize(&bytes)
                     .map_err(|e| format!("Deserialization error: {}", e))?;
 
+                // C. Safety check for Directories
                 if recipe.kind == FileKind::Directory {
                     return Ok(Vec::new());
                 }
-                // C. Use the recipe to glue the chunks back together
-                Ok(self.reconstruct_from_recipe(&recipe))
+
+                // D. Reconstruct the file (New Logic handling Results)
+                let mut result = Vec::new();
+                for hash in recipe.chunks {
+                    // We handle the Result from storage.read_chunk here
+                    match self.storage.read_chunk(&hash) {
+                        Ok(chunk_data) => result.extend_from_slice(&chunk_data),
+                        Err(e) => {
+                            return Err(format!("Storage corrupted. Chunk {} missing: {}", hash, e));
+                        }
+                    }
+                }
+                Ok(result)
             }
             Ok(None) => Err(format!("File not found: {}", filename)),
             Err(e) => Err(format!("Database error: {}", e)),
@@ -99,7 +111,7 @@ impl FileManager {
 
     /// The core logic from your old write_file
     fn create_recipe_from_data(&self, data: &[u8]) -> FileRecipe {
-        let mut chunker = Chunker::new();
+        let mut chunker = Chunker::new(); // Ensure Chunker is imported
         let mut recipe = Vec::new();
         let mut current_chunk_buffer = Vec::new();
         let mut total_size = 0;
@@ -108,16 +120,27 @@ impl FileManager {
             current_chunk_buffer.push(byte);
             chunker.feed_byte(byte);
 
-            if chunker.should_cut() {
-                let hash = self.storage.write_chunk(&current_chunk_buffer);
+            // CHANGED: Simplified logic.
+            // We cut if the algorithm says so, AND we have at least 2KB...
+            // OR if the buffer gets too big (e.g., 64KB) to prevent massive memory usage.
+            if
+                (chunker.should_cut() && current_chunk_buffer.len() >= 2048) ||
+                current_chunk_buffer.len() >= 65536
+            {
+                let hash = self.storage
+                    .write_chunk(&current_chunk_buffer)
+                    .expect("Failed to write chunk");
                 recipe.push(hash);
                 total_size += current_chunk_buffer.len() as u64;
                 current_chunk_buffer.clear();
             }
         }
 
+        // HANDLE THE TAIL (The last piece of the file)
         if !current_chunk_buffer.is_empty() {
-            let hash = self.storage.write_chunk(&current_chunk_buffer);
+            let hash = self.storage
+                .write_chunk(&current_chunk_buffer)
+                .expect("Failed to write tail chunk");
             recipe.push(hash);
             total_size += current_chunk_buffer.len() as u64;
         }
@@ -131,18 +154,19 @@ impl FileManager {
 
     /// The core logic from your old read_file
     fn reconstruct_from_recipe(&self, recipe: &FileRecipe) -> Vec<u8> {
-        let mut full_data = Vec::new();
+        let mut data = Vec::new();
 
         for hash in &recipe.chunks {
-            if let Some(chunk_data) = self.storage.read_chunk(hash) {
-                full_data.extend(chunk_data);
+            // FIX: Use 'if let Ok' instead of 'if let Some'
+            if let Ok(chunk) = self.storage.read_chunk(hash) {
+                data.extend_from_slice(&chunk);
             } else {
-                eprintln!("CRITICAL ERROR: Chunk {} missing from storage!", hash);
+                eprintln!("Warning: Failed to read chunk {}", hash);
             }
         }
-        full_data
-    }
 
+        data
+    }
     /// Helper for FUSE: Check if a file exists and return its size
     pub fn get_file_metadata(&self, filename: &str) -> Option<(u64, FileKind)> {
         match self.db.get(filename) {
@@ -228,5 +252,39 @@ mod tests {
 
         // Cleanup
         fs::remove_dir_all(db_path).unwrap();
+    }
+}
+
+// src/file_manager.rs (At the bottom)
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_manager_cycle() {
+        let path = "./test_fm_db";
+        // Clean up old test data
+        if std::path::Path::new(path).exists() { 
+            fs::remove_dir_all(path).unwrap(); 
+        }
+        
+        let fm = FileManager::new(path);
+        // Create data large enough to force multiple chunks (> 4KB)
+        let data = b"A repeatable pattern for testing chunking limits...".repeat(500); // ~25KB
+        
+        println!("1. Writing file via Manager...");
+        fm.write_file("test_cycle.txt", &data).expect("Manager Write Failed");
+        
+        println!("2. Reading file via Manager...");
+        let read_back = fm.read_file("test_cycle.txt").expect("Manager Read Failed");
+        
+        // Compare lengths first for easy debugging
+        assert_eq!(data.len(), read_back.len(), "Length mismatch!");
+        assert_eq!(data.to_vec(), read_back, "Content mismatch!");
+        
+        println!("Success! Manager cycle works.");
+        fs::remove_dir_all(path).unwrap();
     }
 }

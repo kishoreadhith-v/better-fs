@@ -217,6 +217,7 @@ impl Filesystem for BetterFS {
         reply.ok();
     }
     // 4. READ (Existing logic)
+    // src/fuse_handler.rs -> read
     fn read(
         &mut self,
         _req: &Request,
@@ -228,25 +229,52 @@ impl Filesystem for BetterFS {
         _lock_owner: Option<u64>,
         reply: ReplyData
     ) {
+        let inode_str = format!("{}", ino); // Debug helper
+
+        // 1. Check RAM Buffer
         if let Some(buffer) = self.open_files.get(&ino) {
-            if (offset as usize) >= buffer.data.len() {
-                return reply.data(&[]);
+            // println!("DEBUG: Read from RAM for inode {}", ino);
+            let start = offset as usize;
+            if start < buffer.data.len() {
+                let end = std::cmp::min(start + (_size as usize), buffer.data.len());
+                reply.data(&buffer.data[start..end]);
+            } else {
+                reply.data(&[]);
             }
-            return reply.data(&buffer.data[offset as usize..]);
+            return;
         }
 
+        // 2. Check Backend
         let all_files = self.manager.list_files();
-        if let Some(filename) = all_files.into_iter().find(|n| calculate_inode(n) == ino) {
-            if let Ok(data) = self.manager.read_file(&filename) {
-                if (offset as usize) >= data.len() {
-                    reply.data(&[]);
-                } else {
-                    reply.data(&data[offset as usize..]);
+        // Find the filename for this inode
+        let filename_opt = all_files.iter().find(|n| calculate_inode(n) == ino);
+
+        if let Some(filename) = filename_opt {
+            // Found the name, now try to read the data
+            match self.manager.read_file(filename) {
+                Ok(data) => {
+                    let start = offset as usize;
+                    if start < data.len() {
+                        let end = std::cmp::min(start + (_size as usize), data.len());
+                        reply.data(&data[start..end]);
+                    } else {
+                        // EOF
+                        reply.data(&[]);
+                    }
                 }
-                return;
+                Err(e) => {
+                    // <--- THIS IS THE CRITICAL LOG
+                    println!("CRITICAL FUSE READ ERROR:");
+                    println!("  File: {}", filename);
+                    println!("  Inode: {}", ino);
+                    println!("  Reason: {}", e);
+                    reply.error(libc::EIO);
+                }
             }
+        } else {
+            println!("DEBUG: Inode {} not found in file list", ino);
+            reply.error(libc::ENOENT);
         }
-        reply.error(ENOENT);
     }
 
     // =======================================================================
@@ -415,33 +443,41 @@ impl Filesystem for BetterFS {
     }
 
     // 11. OPEN: Called when opening an existing file (Critical for Append >>)
-    fn open(&mut self, _req: &Request, ino: u64, _flags: i32, reply: ReplyOpen) {
-        // 1. If it's already in the RAM buffer, we are good.
+    fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: ReplyOpen) {
+        // 1. Check if this is Read-Only (like md5sum, cat)
+        // logic: (flags & 3) == 0 means Read Only
+        let is_read_only = (flags & libc::O_ACCMODE) == libc::O_RDONLY;
+
+        if is_read_only {
+            // OPTIMIZATION: Don't load file into RAM.
+            // Let the 'read' function handle it directly from disk.
+            reply.opened(0, 0);
+            return;
+        }
+
+        // 2. If Writing (O_RDWR or O_WRONLY), check if already in RAM
         if self.open_files.contains_key(&ino) {
             reply.opened(0, 0);
             return;
         }
 
-        // 2. If not, we must load it from the Backend (Storage)
+        // 3. Load from Backend (Your Logic)
         let all_files = self.manager.list_files();
-
-        // (Scan to find the filename matching this Inode)
-        if let Some(filename) = all_files.into_iter().find(|n| calculate_inode(n) == ino) {
-            // Read the data from disk
-            if let Ok(data) = self.manager.read_file(&filename) {
-                // Create a new RAM buffer with the existing data
+        if let Some(filename) = all_files.iter().find(|n| calculate_inode(n) == ino) {
+            if let Ok(data) = self.manager.read_file(filename) {
+                // FIXED: Using 'WriteBuffer' correctly now
                 let buffer = WriteBuffer {
-                    filename: filename,
+                    filename: filename.clone(),
                     data: data,
                 };
                 self.open_files.insert(ino, buffer);
-
                 reply.opened(0, 0);
                 return;
             }
         }
 
-        reply.error(ENOENT);
+        // If we get here, it might be a new file being created, so we allow it.
+        reply.opened(0, 0);
     }
 
     // 12. MKDIR
