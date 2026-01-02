@@ -64,6 +64,46 @@ impl Storage {
         let raw_data = zstd::decode_all(&compressed_data[..])?;
         Ok(raw_data)
     }
+
+    pub fn list_all_chunks(&self) -> Result<Vec<String>, std::io::Error> {
+        let mut chunks = Vec::new();
+        let cas_dir = self.root_dir.join("cas");
+        
+        if !cas_dir.exists() {
+            return Ok(chunks);
+        }
+
+        // Iterate over subdirectories (e.g., "a1", "b2")
+        for entry in fs::read_dir(cas_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                // The folder name is the first 2 chars of hash
+                let prefix = entry.file_name().into_string().unwrap();
+                
+                // Iterate over files inside (the rest of the hash)
+                for file_entry in fs::read_dir(path)? {
+                    let file_entry = file_entry?;
+                    let suffix = file_entry.file_name().into_string().unwrap();
+                    
+                    // Reconstruct full hash
+                    chunks.push(format!("{}{}", prefix, suffix));
+                }
+            }
+        }
+        Ok(chunks)
+    }
+
+    pub fn delete_chunk(&self, hash: &str) -> Result<(), std::io::Error> {
+        let subdir = self.root_dir.join("cas").join(&hash[0..2]);
+        let file_path = subdir.join(&hash[2..]);
+        if file_path.exists() {
+            fs::remove_file(file_path)?;
+        }
+        // Optional: Remove subdir if empty
+        let _ = fs::remove_dir(subdir); 
+        Ok(())
+    }
 }
 
 

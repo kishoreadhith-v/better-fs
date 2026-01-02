@@ -41,6 +41,8 @@ enum Commands {
     },
     /// Inspect the internal database (for debugging)
     Inspect,
+    /// Run Garbage Collection to remove unused chunks
+    Gc,
 }
 
 fn main() {
@@ -144,6 +146,14 @@ fn main() {
                 }
             }
             println!("---------------------------");
+        }
+        
+        // Garbage Collection Command
+        Commands::Gc => {
+            match manager.run_gc() {
+                Ok(count) => println!("Successfully removed {} orphaned chunks.", count),
+                Err(e) => eprintln!("GC Failed: {}", e),
+            }
         }
     }
 }

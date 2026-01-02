@@ -3,6 +3,7 @@ use crate::chunker::Chunker;
 use crate::storage::Storage;
 use serde::{ Deserialize, Serialize };
 use std::path::Path;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FileKind {
@@ -111,6 +112,43 @@ impl FileManager {
             }
         }
         files
+    }
+
+    // 4. GARBAGE COLLECTION: Cleans up unreferenced chunks from storage
+    pub fn run_gc(&self) -> Result<usize, String> {
+        println!("GC: Starting Mark-and-Sweep...");
+
+        // 1. MARK: Collect all hashes currently in use by active files
+        let mut active_hashes = HashSet::new();
+        
+        for item in self.db.iter() {
+            let (_, value) = item.map_err(|e| e.to_string())?;
+            // Deserialize recipe
+            if let Ok(recipe) = bincode::deserialize::<FileRecipe>(&value) {
+                for hash in recipe.chunks {
+                    active_hashes.insert(hash);
+                }
+            }
+        }
+        println!("GC: Found {} active chunks referenced in DB.", active_hashes.len());
+
+        // 2. SWEEP: List all chunks on disk
+        let all_chunks_on_disk = self.storage.list_all_chunks()
+            .map_err(|e| format!("Storage error: {}", e))?;
+
+        // 3. DESTROY: Delete orphans
+        let mut deleted_count = 0;
+        for chunk_hash in all_chunks_on_disk {
+            if !active_hashes.contains(&chunk_hash) {
+                // It's an orphan!
+                self.storage.delete_chunk(&chunk_hash)
+                    .map_err(|e| format!("Failed to delete {}: {}", chunk_hash, e))?;
+                deleted_count += 1;
+            }
+        }
+        
+        println!("GC: Cleanup complete. Deleted {} orphaned chunks.", deleted_count);
+        Ok(deleted_count)
     }
 
     // =======================================================================
