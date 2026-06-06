@@ -892,7 +892,7 @@ snapshot accumulation, and mixed realistic workload.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/arcfs_vs_ext4_by_class.png}
+\includegraphics[width=\columnwidth]{fig1}
 \caption{ArcFS write bandwidth relative to ext4 across the responsive
   (left) and durable (right) evaluation classes. ArcFS outperforms ext4
   by up to $9.2\times$ in the responsive class; the gap narrows under
@@ -941,7 +941,7 @@ blocking.  All other durable profiles are near-parity with ext4.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/integrity_summary.png}
+\includegraphics[width=\columnwidth]{fig2}
 \caption{Integrity suite summary. All targets returned exit code 0
   (zero errors) across sequential, random 4\,KB, and random 64\,KB
   verification profiles. ArcFS shows higher wall-clock runtime on
@@ -963,7 +963,7 @@ affected.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/dedup_curve.png}
+\includegraphics[width=\columnwidth]{fig3}
 \caption{Physical disk consumption versus copy count for a 100\,MB
   reference file. Ext4 and bindfs grow strictly linearly. Btrfs stays
   constant at $\sim$21\,MB via O(1) kernel reflink. ArcFS grows
@@ -992,7 +992,7 @@ explicit reflink call is required.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/compression_efficiency.png}
+\includegraphics[width=\columnwidth]{fig4}
 \caption{Physical-to-logical storage ratio versus data compressibility
   (0\% = pure random bytes; 100\% = uniform zeros). Ext4, bindfs, and
   uncompressed Btrfs hold a 1.0 ratio at all levels. ArcFS achieves
@@ -1020,7 +1020,7 @@ threshold; this characterizes the vast majority of real-world workloads.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/snapshot_growth.png}
+\includegraphics[width=\columnwidth]{fig5}
 \caption{Cumulative physical disk usage across five successive snapshots
   with 10\% data churn per snapshot (200\,MB base). Ext4 and bindfs
   grow by $\sim$209\,MB per snapshot (full copy). Btrfs grows by
@@ -1064,7 +1064,7 @@ while Btrfs dominates on pure deduplication (0.016) via O(1) reflink.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/summary_heatmap.png}
+\includegraphics[width=\columnwidth]{fig6}
 \caption{Disk usage efficiency heatmap (physical/logical ratio, lower is
   better). ArcFS leads on mixed and compression workloads; Btrfs leads on
   pure deduplication via kernel reflink.}

@@ -1,0 +1,19 @@
+%% FGCS Highlights — 3–5 bullet points, each ≤85 characters incl. spaces
+%% Submit as a separate file named highlights.tex
+
+\documentclass{article}
+\usepackage[margin=2cm]{geometry}
+\pagestyle{empty}
+\begin{document}
+
+\noindent\textbf{Highlights}
+
+\begin{itemize}
+  \item ArcFS integrates CDC deduplication, CAS, CoW snapshots in a single FUSE daemon
+  \item 9.2$\times$ sequential write speedup over ext4 via bounded write-back LRU cache
+  \item 83.7\% storage reduction on identical-file workloads; zero integrity errors
+  \item TagFS overlays semantic tag navigation without data duplication
+  \item Eleven quantified limitations map a concrete path to production readiness
+\end{itemize}
+
+\end{document}
